@@ -1,0 +1,463 @@
+# Create project
+mkdir architect-proposal-ai && cd architect-proposal-ai
+git init
+
+# Create structure
+mkdir -p frontend backend database
+cd database
+touch schema.sql seed.sql
+-- database/schema.sql
+
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ============================================
+-- ARCHITECTS
+-- ============================================
+CREATE TABLE architects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    firm_name VARCHAR(255),
+    license_number VARCHAR(100),
+    phone VARCHAR(50),
+    website VARCHAR(255),
+    bio TEXT,
+    specializations TEXT[] DEFAULT '{}',
+    subscription_tier VARCHAR(50) DEFAULT 'free',
+    stripe_customer_id VARCHAR(255),
+    stripe_subscription_id VARCHAR(255),
+    subscription_status VARCHAR(50) DEFAULT 'inactive',
+    subscription_period_end TIMESTAMP,
+    proposals_used_this_month INTEGER DEFAULT 0,
+    usage_reset_date DATE DEFAULT DATE_TRUNC(
+        'month', NOW() + INTERVAL '1 month'
+    ),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- FIRM BRANDING
+-- ============================================
+CREATE TABLE firm_branding (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    architect_id UUID REFERENCES architects(id) ON DELETE CASCADE,
+    logo_url VARCHAR(500),
+    primary_color VARCHAR(7) DEFAULT '#1a56db',
+    secondary_color VARCHAR(7) DEFAULT '#374151',
+    accent_color VARCHAR(7) DEFAULT '#f59e0b',
+    font_heading VARCHAR(100) DEFAULT 'Inter',
+    font_body VARCHAR(100) DEFAULT 'Inter',
+    tagline VARCHAR(255),
+    address TEXT,
+    footer_text TEXT,
+    email_signature TEXT,
+    proposal_template VARCHAR(50) DEFAULT 'modern',
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- CLIENTS
+-- ============================================
+CREATE TABLE clients (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    architect_id UUID REFERENCES architects(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255),
+    phone VARCHAR(50),
+    company VARCHAR(255),
+    address TEXT,
+    city VARCHAR(100),
+    country VARCHAR(100),
+    notes TEXT,
+    total_proposals INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- PROPOSALS
+-- ============================================
+CREATE TABLE proposals (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    architect_id UUID REFERENCES architects(id) ON DELETE CASCADE,
+    client_id UUID REFERENCES clients(id),
+    team_id UUID,
+    title VARCHAR(255) NOT NULL,
+    project_type VARCHAR(100),
+    status VARCHAR(50) DEFAULT 'draft',
+    content JSONB NOT NULL DEFAULT '{}',
+    raw_inputs JSONB DEFAULT '{}',
+    budget_min DECIMAL(12,2),
+    budget_max DECIMAL(12,2),
+    timeline VARCHAR(255),
+    valid_until DATE,
+    public_token VARCHAR(255) UNIQUE DEFAULT encode(
+        gen_random_bytes(32), 'hex'
+    ),
+    pdf_url VARCHAR(500),
+    pdf_generated_at TIMESTAMP,
+    view_count INTEGER DEFAULT 0,
+    last_viewed_at TIMESTAMP,
+    sent_at TIMESTAMP,
+    accepted_at TIMESTAMP,
+    rejected_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- TEAMS
+-- ============================================
+CREATE TABLE teams (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id UUID REFERENCES architects(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    stripe_subscription_id VARCHAR(255),
+    subscription_status VARCHAR(50) DEFAULT 'active',
+    max_seats INTEGER DEFAULT 10,
+    current_seats INTEGER DEFAULT 1,
+    subscription_period_end TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE team_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    architect_id UUID REFERENCES architects(id) ON DELETE CASCADE,
+    role VARCHAR(50) DEFAULT 'member',
+    status VARCHAR(50) DEFAULT 'pending',
+    invited_email VARCHAR(255),
+    invite_token VARCHAR(255) UNIQUE,
+    invite_expires_at TIMESTAMP,
+    joined_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(team_id, architect_id)
+);
+
+CREATE TABLE team_invites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    invited_by UUID REFERENCES architects(id),
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(50) DEFAULT 'member',
+    token VARCHAR(255) UNIQUE NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE team_branding (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    logo_url VARCHAR(500),
+    primary_color VARCHAR(7) DEFAULT '#1a56db',
+    secondary_color VARCHAR(7) DEFAULT '#374151',
+    accent_color VARCHAR(7) DEFAULT '#f59e0b',
+    font_heading VARCHAR(100) DEFAULT 'Inter',
+    font_body VARCHAR(100) DEFAULT 'Inter',
+    tagline VARCHAR(255),
+    address TEXT,
+    footer_text TEXT,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- TEMPLATES
+-- ============================================
+CREATE TABLE proposal_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    architect_id UUID REFERENCES architects(id) ON DELETE CASCADE,
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    project_type VARCHAR(100),
+    content JSONB DEFAULT '{}',
+    is_default BOOLEAN DEFAULT false,
+    is_locked BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- USAGE & BILLING
+-- ============================================
+CREATE TABLE usage_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    architect_id UUID REFERENCES architects(id),
+    team_id UUID REFERENCES teams(id),
+    action VARCHAR(100),
+    metadata JSONB DEFAULT '{}',
+    billing_period VARCHAR(7),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE billing_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    architect_id UUID REFERENCES architects(id),
+    team_id UUID REFERENCES teams(id),
+    stripe_event_id VARCHAR(255) UNIQUE,
+    stripe_invoice_id VARCHAR(255),
+    event_type VARCHAR(100),
+    amount INTEGER,
+    currency VARCHAR(10) DEFAULT 'usd',
+    status VARCHAR(50),
+    plan VARCHAR(50),
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- PROPOSAL EVENTS
+-- ============================================
+CREATE TABLE proposal_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    proposal_id UUID REFERENCES proposals(id) ON DELETE CASCADE,
+    event_type VARCHAR(50),
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- INDEXES
+-- ============================================
+CREATE INDEX idx_proposals_architect ON proposals(architect_id);
+CREATE INDEX idx_proposals_status ON proposals(status);
+CREATE INDEX idx_proposals_token ON proposals(public_token);
+CREATE INDEX idx_clients_architect ON clients(architect_id);
+CREATE INDEX idx_branding_architect ON firm_branding(architect_id);
+CREATE INDEX idx_team_members_team ON team_members(team_id);
+CREATE INDEX idx_team_members_architect ON team_members(architect_id);
+CREATE INDEX idx_usage_logs_architect ON usage_logs(architect_id);
+CREATE INDEX idx_usage_logs_period ON usage_logs(billing_period);
+
+-- ============================================
+-- TRIGGERS
+-- ============================================
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER architects_updated_at
+    BEFORE UPDATE ON architects
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER proposals_updated_at
+    BEFORE UPDATE ON proposals
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER teams_updated_at
+    BEFORE UPDATE ON teams
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+cd ../backend
+
+# Create structure
+mkdir -p routers services models middleware config
+
+touch main.py database.py dependencies.py
+touch config/__init__.py config/settings.py config/plans.py
+touch models/__init__.py models/user.py models/proposal.py models/billing.py
+touch routers/__init__.py routers/auth.py routers/proposals.py
+touch routers/branding.py routers/billing.py routers/export.py
+touch routers/clients.py routers/teams.py
+touch services/__init__.py services/ai_generator.py
+touch services/pdf_generator.py services/email_service.py
+touch services/storage_service.py services/stripe_service.py
+touch middleware/__init__.py middleware/rate_limit.py
+touch .env.example requirements.txt
+# requirements.txt
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+asyncpg==0.29.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+pydantic-settings==2.1.0
+pydantic[email]==2.5.0
+openai==1.10.0
+stripe==7.8.0
+boto3==1.34.0
+sendgrid==6.11.0
+weasyprint==60.2
+jinja2==3.1.3
+python-dotenv==1.0.0
+slowapi==0.1.9
+httpx==0.26.0
+Pillow==10.2.0
+# .env.example
+APP_URL=http://localhost:3000
+SECRET_KEY=your-super-secret-key-change-this
+DATABASE_URL=postgresql://user:password@localhost:5432/architect_proposals
+
+OPENAI_API_KEY=sk-xxx
+
+STRIPE_SECRET_KEY=sk_test_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+STRIPE_PRO_PRICE_ID=price_xxx
+STRIPE_AGENCY_PRICE_ID=price_xxx
+
+AWS_ACCESS_KEY_ID=xxx
+AWS_SECRET_ACCESS_KEY=xxx
+AWS_BUCKET_NAME=architect-proposals
+AWS_REGION=us-east-1
+
+SENDGRID_API_KEY=SG.xxx
+FROM_EMAIL=proposals@yourapp.com
+# config/settings.py
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    APP_URL: str = "http://localhost:3000"
+    SECRET_KEY: str = "change-this-secret"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
+
+    DATABASE_URL: str
+
+    OPENAI_API_KEY: str
+
+    STRIPE_SECRET_KEY: str
+    STRIPE_WEBHOOK_SECRET: str
+    STRIPE_PRO_PRICE_ID: str = ""
+    STRIPE_AGENCY_PRICE_ID: str = ""
+
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_BUCKET_NAME: str = ""
+    AWS_REGION: str = "us-east-1"
+
+    SENDGRID_API_KEY: str = ""
+    FROM_EMAIL: str = "proposals@yourapp.com"
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+# config/plans.py
+
+PLANS = {
+    "free": {
+        "name": "Free",
+        "price_monthly": 0,
+        "stripe_price_id": None,
+        "limits": {
+            "proposals_per_month": 3,
+            "team_seats": 1,
+            "templates": 2,
+        },
+        "features": {
+            "pdf_export": False,
+            "custom_branding": False,
+            "email_sending": False,
+            "analytics": False,
+            "team_access": False,
+            "shared_templates": False,
+            "priority_support": False,
+            "usage_reporting": False,
+        }
+    },
+    "pro": {
+        "name": "Pro",
+        "price_monthly": 39,
+        "stripe_price_id": "price_pro_monthly_xxx",
+        "limits": {
+            "proposals_per_month": -1,
+            "team_seats": 1,
+            "templates": -1,
+        },
+        "features": {
+            "pdf_export": True,
+            "custom_branding": True,
+            "email_sending": True,
+            "analytics": True,
+            "team_access": False,
+            "shared_templates": False,
+            "priority_support": True,
+            "usage_reporting": False,
+        }
+    },
+    "agency": {
+        "name": "Agency",
+        "price_monthly": 99,
+        "stripe_price_id": "price_agency_monthly_xxx",
+        "limits": {
+            "proposals_per_month": -1,
+            "team_seats": 10,
+            "templates": -1,
+        },
+        "features": {
+            "pdf_export": True,
+            "custom_branding": True,
+            "email_sending": True,
+            "analytics": True,
+            "team_access": True,
+            "shared_templates": True,
+            "priority_support": True,
+            "usage_reporting": True,
+        }
+    }
+}
+
+
+def get_plan(tier: str) -> dict:
+    return PLANS.get(tier, PLANS["free"])
+
+
+def check_feature(tier: str, feature: str) -> bool:
+    return get_plan(tier)["features"].get(feature, False)
+
+
+def check_limit(tier: str, limit_key: str) -> int:
+    return get_plan(tier)["limits"].get(limit_key, 0)
+# database.py
+import asyncpg
+from config.settings import settings
+
+_pool = None
+
+async def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(
+            settings.DATABASE_URL,
+            min_size=2,
+            max_size=10
+        )
+    return _pool
+
+async def get_db():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        yield conn
+# dependencies.py
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+from config.settings import settings
+from config.plans import check_feature, check_limit
+from database import get_db
+
+security = HTTPBearer()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db=Depends(get_db)
+):
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        user_id: str = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid
